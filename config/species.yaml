@@ -1,0 +1,49 @@
+# =============================================================================
+# Species Configuration
+# =============================================================================
+# Define each species: data location, copy type, and gene naming conventions.
+# 
+# Fields:
+#   data_dir:      Path to 10x filtered_feature_bc_matrix directory
+#   copy_type:     "single" (mammals/reptiles) or "multi" (teleost fish)
+#   copy_pattern:  Regex to identify paralog families (multi-copy only)
+#                  Group 1 = gene root name, rest = paralog suffix
+#   mt_pattern:    Regex for mitochondrial genes
+#   label:         Display name (optional, defaults to species key)
+# =============================================================================
+
+# --- Single-copy species (uppercase conversion) ---
+human:
+  data_dir: "/path/to/human/filtered_feature_bc_matrix"
+  copy_type: "single"
+  mt_pattern: "^MT-"
+  label: "Human"
+
+mouse:
+  data_dir: "/path/to/mouse/filtered_feature_bc_matrix"
+  copy_type: "single"
+  mt_pattern: "^mt-"
+  label: "Mouse"
+
+lizard:
+  data_dir: "/path/to/lizard/filtered_feature_bc_matrix"
+  copy_type: "single"
+  mt_pattern: "^MT-"
+  label: "Brown Anole Lizard"
+
+# --- Multi-copy species (adaptive paralog ranking) ---
+zebrafish:
+  data_dir: "/path/to/zebrafish/filtered_feature_bc_matrix"
+  copy_type: "multi"
+  copy_pattern: "^(\\w+?)([a-z]\\d*|[a-z]?)$"
+  mt_pattern: "^mt-"
+  label: "Zebrafish"
+
+large_yellow_croaker:
+  data_dir: "/path/to/croaker/filtered_feature_bc_matrix"
+  copy_type: "multi"
+  copy_pattern: "^(\\w+?)([a-z]\\d*|[a-z]?)$"
+  mt_pattern: "^mt-"
+  label: "Large Yellow Croaker"
+
+# Add more species as needed. To disable a species, comment it out or delete its entry.

@@ -2,6 +2,8 @@
 
 [![R](https://img.shields.io/badge/R-%3E%3D4.2-blue.svg)](https://www.r-project.org/)
 [![Seurat](https://img.shields.io/badge/Seurat-%3E%3D5.0-green.svg)](https://satijalab.org/seurat/)
+[![Snakemake](https://img.shields.io/badge/Snakemake-%3E%3D7.30-red.svg)](https://snakemake.github.io/)
+[![Docker](https://img.shields.io/badge/Docker-ready-blue.svg)](./containers/Dockerfile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 > **A novel method for cross-species single-cell RNA-seq integration when standard ortholog-based alignment fails.**
@@ -58,29 +60,102 @@ For each species independently:
 
 ```
 cross-species-hvg-cca/
-├── README.md                              # This file
-├── LICENSE                                # MIT License
+├── README.md
+├── LICENSE
 ├── .gitignore
+├── Snakefile                              # Snakemake entry point (symlink)
 ├── R/
-│   └── adaptive_ortholog.R               # Core algorithm (adaptive_ortholog_align)
-├── scripts/
-│   ├── 01_preprocessing.R                # Load, QC, normalize each species
-│   ├── 02_adaptive_ortholog_alignment.R  # Run adaptive gene alignment
-│   ├── 03_cca_integration.R              # Seurat CCA integration
-│   └── 04_visualization.R                # Publication-quality figures
+│   └── adaptive_ortholog.R               # Core algorithm (~400 lines)
+├── config/
+│   ├── config.yaml                        # Pipeline parameters
+│   └── species.yaml                       # Species definitions
+├── workflow/
+│   ├── Snakefile                          # Main Snakemake workflow
+│   ├── rules/                             # Per-step rules
+│   └── scripts/                           # R scripts (Snakemake-compatible)
+│       ├── preprocess.R
+│       ├── align.R
+│       ├── integrate.R
+│       └── visualize.R
+├── envs/
+│   └── seurat.yaml                        # Conda environment
+├── containers/
+│   └── Dockerfile                         # Docker/Singularity support
+├── scripts/                               # Standalone R scripts (manual mode)
+│   ├── 01_preprocessing.R
+│   ├── 02_adaptive_ortholog_alignment.R
+│   ├── 03_cca_integration.R
+│   └── 04_visualization.R
 ├── vignettes/
-│   └── tutorial.Rmd                      # Step-by-step tutorial
-├── data/                                 # Processed data (gitignored)
-│   └── README.md
-├── figures/                              # Output figures
-│   └── cross-species_CCA.png             # Example CCA plot
-└── results/                              # Analysis results
-    └── README.md
+│   └── tutorial.Rmd
+├── data/                                  # Processed data (gitignored)
+├── figures/                               # Output figures
+└── results/                               # Analysis results
 ```
 
 ---
 
-## Quick Start
+## One-Click Reproducible Pipeline (Snakemake)
+
+The entire pipeline can be run with a single command:
+
+```bash
+# 1. Edit your species configuration
+vim config/species.yaml
+
+# 2. Run the full pipeline
+snakemake --cores 8 --use-conda
+
+# That's it. Output in results/ and figures/
+```
+
+### Snakemake Quick Reference
+
+```bash
+# Preview what will run (dry-run)
+snakemake --cores 8 --dry-run
+
+# Run specific step
+snakemake data/all_species_preprocessed.rds    # Only preprocessing
+snakemake results/align_result.rds             # Up to alignment
+snakemake results/integrated_seurat.rds        # Up to integration
+snakemake figures/fig6_combined_panel.png      # Full pipeline
+
+# Force re-run everything
+snakemake --cores 8 --forcerun all
+
+# Generate interactive HTML report
+snakemake --cores 8 --report results/pipeline_report.html
+
+# Clean all generated files
+snakemake clean
+
+# With Docker (no local dependencies needed)
+docker build -t cross-species-hvg-cca .
+docker run -v $(pwd)/data:/app/data -v $(pwd)/results:/app/results \
+    cross-species-hvg-cca snakemake --cores 8
+```
+
+### Configuration
+
+All parameters in `config/config.yaml`:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `n_hvg` | 2000 | HVGs per species |
+| `n_dim` | 30 | CCA dimensions |
+| `integration_method` | cca | "cca" or "rpca" |
+| `cluster_resolution` | 0.5 | Seurat clustering |
+| `min_features` | 200 | Min features per cell |
+| `max_mt_percent` | 25 | Max MT% filter |
+| `mem_gb` | 32 | Memory allocation |
+| `threads` | 8 | CPU threads |
+
+Species defined in `config/species.yaml` — add your species there.
+
+---
+
+## Quick Start (Manual)
 
 ### Prerequisites
 

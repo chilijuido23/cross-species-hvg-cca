@@ -1,0 +1,221 @@
+# =============================================================================
+# Cross-Species HVG-CCA Workflow
+# =============================================================================
+# Snakemake pipeline for adaptive ortholog-based cross-species scRNA-seq
+# integration. Handles multi-copy genes (teleost fish) via expression-weighted
+# paralog ranking.
+#
+# Usage:
+#   snakemake --cores 8                    # Run entire pipeline
+#   snakemake --cores 8 --dry-run          # Preview what will run
+#   snakemake --cores 8 --forcerun all     # Force re-run everything
+#   snakemake --cores 8 --report report.html  # Generate HTML report
+#
+#   # With conda (recommended for reproducibility):
+#   snakemake --cores 8 --use-conda
+#
+#   # With Docker:
+#   snakemake --cores 8 --use-singularity
+#
+#   # Targeted steps:
+#   snakemake data/all_species_preprocessed.rds       # Only preprocessing
+#   snakemake results/integrated_seurat.rds           # Up to integration
+#   snakemake figures/fig6_combined_panel.png         # Full pipeline
+# =============================================================================
+
+configfile: "config/config.yaml"
+
+
+# ---- Helper function: load species list ----
+import yaml
+
+with open(config["species_config"], "r") as f:
+    SPECIES_CFG = yaml.safe_load(f)
+
+SPECIES = list(SPECIES_CFG.keys())
+
+SINGLE_COPY = [sp for sp in SPECIES if SPECIES_CFG[sp]["copy_type"] == "single"]
+MULTI_COPY  = [sp for sp in SPECIES if SPECIES_CFG[sp]["copy_type"] == "multi"]
+
+
+# ---- Target: build everything ----
+rule all:
+    input:
+        alignment   = f"{config['output_dir']}/align_result.rds",
+        integrated  = f"{config['output_dir']}/integrated_seurat.rds",
+        report_fig  = f"{config['figures_dir']}/fig6_combined_panel.png",
+        diagnostics = f"{config['output_dir']}/alignment_diagnostics.png",
+
+
+# =============================================================================
+# Step 1: Preprocessing
+# =============================================================================
+rule preprocess:
+    """Load 10x data for each species, QC filter, normalize, save."""
+    input:
+        # Each species data_dir must exist
+        expand(
+            "{data_dir}/matrix.mtx.gz",
+            data_dir=[SPECIES_CFG[sp]["data_dir"] for sp in SPECIES]
+        ),
+        species_config = config["species_config"],
+    output:
+        combined = f"{config['data_dir']}/all_species_preprocessed.rds",
+    params:
+        min_features   = config["min_features"],
+        max_mt_percent = config["max_mt_percent"],
+        outdir         = config["data_dir"],
+    conda:
+        "envs/seurat.yaml"
+    resources:
+        mem_mb = config["mem_gb"] * 1024,
+        threads = config["threads"],
+    log:
+        f"{config['output_dir']}/logs/preprocess.log",
+    shell:
+        """
+        Rscript workflow/scripts/preprocess.R \
+            --species_config {input.species_config} \
+            --outdir {params.outdir} \
+            --min_features {params.min_features} \
+            --max_mt_percent {params.max_mt_percent} \
+            2>&1 | tee {log}
+        """
+
+
+# =============================================================================
+# Step 2: Adaptive Ortholog Alignment (CORE INNOVATION)
+# =============================================================================
+rule align:
+    """Compute HVGs per species, run adaptive paralog ranking, intersect genes."""
+    input:
+        preprocessed  = f"{config['data_dir']}/all_species_preprocessed.rds",
+        species_config = config["species_config"],
+        # Core algorithm dependency
+        algorithm     = "R/adaptive_ortholog.R",
+    output:
+        result        = f"{config['output_dir']}/align_result.rds",
+        gene_map      = f"{config['output_dir']}/aligned_gene_map.csv",
+        gene_list     = f"{config['output_dir']}/aligned_genes.txt",
+        diagnostics   = f"{config['output_dir']}/alignment_diagnostics.png",
+    params:
+        n_hvg  = config["n_hvg"],
+        outdir = config["output_dir"],
+    conda:
+        "envs/seurat.yaml"
+    resources:
+        mem_mb = config["mem_gb"] * 1024,
+        threads = config["threads"],
+    log:
+        f"{config['output_dir']}/logs/align.log",
+    shell:
+        """
+        Rscript workflow/scripts/align.R \
+            --input {input.preprocessed} \
+            --species_config {input.species_config} \
+            --n_hvg {params.n_hvg} \
+            --outdir {params.outdir} \
+            2>&1 | tee {log}
+        """
+
+
+# =============================================================================
+# Step 3: CCA Integration
+# =============================================================================
+rule integrate:
+    """Merge species, run Seurat CCA integration, compute UMAP and clustering."""
+    input:
+        preprocessed = f"{config['data_dir']}/all_species_preprocessed.rds",
+        align_result = f"{config['output_dir']}/align_result.rds",
+    output:
+        integrated   = f"{config['output_dir']}/integrated_seurat.rds",
+    params:
+        n_dim      = config["n_dim"],
+        resolution = config["cluster_resolution"],
+        method     = config["integration_method"],
+        outdir     = config["output_dir"],
+    conda:
+        "envs/seurat.yaml"
+    resources:
+        mem_mb = config["mem_gb"] * 1024,
+        threads = config["threads"],
+    log:
+        f"{config['output_dir']}/logs/integrate.log",
+    shell:
+        """
+        Rscript workflow/scripts/integrate.R \
+            --preprocessed {input.preprocessed} \
+            --align_result {input.align_result} \
+            --n_dim {params.n_dim} \
+            --resolution {params.resolution} \
+            --integration_method {params.method} \
+            --outdir {params.outdir} \
+            2>&1 | tee {log}
+        """
+
+
+# =============================================================================
+# Step 4: Visualization
+# =============================================================================
+rule visualize:
+    """Generate publication-quality figures from integrated object."""
+    input:
+        integrated = f"{config['output_dir']}/integrated_seurat.rds",
+    output:
+        fig1 = f"{config['figures_dir']}/fig1_umap_by_species.png",
+        fig2 = f"{config['figures_dir']}/fig2_umap_split.png",
+        fig3 = f"{config['figures_dir']}/fig3_umap_by_cluster.png",
+        fig4 = f"{config['figures_dir']}/fig4_species_composition.png",
+        fig5 = f"{config['figures_dir']}/fig5_cell_counts.png",
+        fig6 = f"{config['figures_dir']}/fig6_combined_panel.png",
+    params:
+        width  = config["figure_width"],
+        height = config["figure_height"],
+        dpi    = config["figure_dpi"],
+        outdir = config["figures_dir"],
+    conda:
+        "envs/seurat.yaml"
+    resources:
+        mem_mb = config["mem_gb"] * 1024,
+        threads = config["threads"],
+    log:
+        f"{config['output_dir']}/logs/visualize.log",
+    shell:
+        """
+        Rscript workflow/scripts/visualize.R \
+            --input {input.integrated} \
+            --outdir {params.outdir} \
+            --width {params.width} \
+            --height {params.height} \
+            --dpi {params.dpi} \
+            2>&1 | tee {log}
+        """
+
+
+# =============================================================================
+# Utility: Clean intermediate files
+# =============================================================================
+rule clean:
+    """Remove all generated files to start fresh."""
+    shell:
+        """
+        rm -rf {config[data_dir]}/*.rds {config[data_dir]}/*.csv {config[data_dir]}/*.txt
+        rm -rf {config[output_dir]}/*.rds {config[output_dir]}/*.csv {config[output_dir]}/*.txt
+        rm -rf {config[figures_dir]}/*.png
+        rm -rf {config[output_dir]}/logs/
+        echo "Cleaned all generated files."
+        """
+
+
+# =============================================================================
+# Utility: Generate HTML report
+# =============================================================================
+rule report:
+    """Generate Snakemake HTML report."""
+    output:
+        f"{config['output_dir']}/pipeline_report.html",
+    shell:
+        """
+        snakemake --report {output}
+        echo "Report saved to {output}"
+        """

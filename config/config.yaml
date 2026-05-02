@@ -1,0 +1,37 @@
+# =============================================================================
+# Cross-Species HVG-CCA Pipeline Configuration
+# =============================================================================
+# Edit this file to match your data and analysis parameters.
+
+# ---- Paths ----
+data_dir: "data"           # Input data directory
+output_dir: "results"      # Output directory  
+figures_dir: "figures"     # Figures directory
+
+# ---- Species Configuration ----
+# Path to species definition file
+species_config: "config/species.yaml"
+
+# ---- Alignment Parameters ----
+n_hvg: 2000                # Number of HVGs per species
+
+# ---- Integration Parameters ----
+integration_method: "cca"  # Options: "cca", "rpca" (reciprocal PCA)
+n_dim: 30                  # Number of CCA dimensions
+
+# ---- QC Parameters ----
+min_features: 200          # Minimum features per cell
+max_mt_percent: 25         # Maximum mitochondrial gene percentage
+
+# ---- Clustering Parameters ----
+cluster_resolution: 0.5    # Seurat clustering resolution
+
+# ---- Visualization Parameters ----
+figure_width: 10           # Figure width (inches)
+figure_height: 8           # Figure height (inches)
+figure_dpi: 150            # Figure resolution
+
+# ---- Resource Limits ----
+max_cells_per_species: 50000  # Downsample if above this
+mem_gb: 32                    # Memory in GB
+threads: 8                    # CPU threads

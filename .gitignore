@@ -21,6 +21,8 @@ figures/*.svg
 # Results
 results/*.rds
 results/*.csv
+results/logs/
+results/*.html
 
 # R package files
 *.tar.gz
