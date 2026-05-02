@@ -1,0 +1,231 @@
+---
+title: "Cross-Species HVG-CCA: A Step-by-Step Tutorial"
+author: "chilijuido23"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: cosmo
+vignette: >
+  %\VignetteIndexEntry{Cross-Species HVG-CCA Tutorial}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 7
+)
+```
+
+# Overview
+
+This tutorial walks through the complete pipeline for integrating single-cell
+RNA-seq data across species using **adaptive HVG-based ortholog alignment**.
+
+By the end, you will:
+- Understand why standard ortholog alignment fails for fish species
+- Preprocess scRNA-seq data from multiple species
+- Run adaptive gene alignment
+- Perform Seurat CCA integration
+- Generate publication-quality visualizations
+
+# The Problem We're Solving
+
+## Why Can't We Just Use Ortholog Tables?
+
+Consider this scenario: you have scRNA-seq data from human, mouse, lizard,
+zebrafish, and large yellow croaker hypothalamus. You want to integrate them
+to find conserved cell types.
+
+Standard approach: use Ensembl BioMart to download orthologous gene pairs.
+
+**The problem**: Zebrafish has `sox2a` AND `sox2b`. Human has `SOX2`.
+Which zebrafish gene should map to `SOX2`?
+
+```{r echo=FALSE, fig.cap="Multi-copy gene dilemma"}
+# Illustration
+library(ggplot2)
+df <- data.frame(
+  species = rep(c("Human", "Mouse", "Lizard", "Zebrafish", "Croaker"), each = 1),
+  gene = c("SOX2", "Sox2", "SOX2", "sox2a\nsox2b", "sox2a\nsox2b"),
+  y = c(1, 1, 1, 1, 1)
+)
+ggplot(df, aes(x = species, y = y, label = gene)) +
+  geom_point(size = 5, color = "steelblue") +
+  geom_text(vjust = -1, size = 4) +
+  ylim(0.5, 1.8) +
+  labs(title = "Gene Name Ambiguity Across Species",
+       subtitle = "Fish have multiple paralogs for each mammalian gene") +
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+Our solution: **let expression data decide which paralog to use**.
+
+# Step 1: Preprocessing
+
+```{r eval=FALSE}
+# Run in terminal:
+cd scripts
+Rscript 01_preprocessing.R \
+  --species_config species_config.yaml \
+  --outdir ../data \
+  --min_features 200 \
+  --max_mt_percent 25
+```
+
+Inside R, the preprocessing looks like this:
+
+```{r eval=FALSE}
+library(Seurat)
+
+# Load 10x data for each species
+human_10x <- Read10X("path/to/human/filtered_feature_bc_matrix")
+human <- CreateSeuratObject(human_10x, project = "human")
+
+# QC and filter
+human[["percent.mt"]] <- PercentageFeatureSet(human, pattern = "^MT-")
+human <- subset(human, subset = nFeature_RNA > 200 & percent.mt < 25)
+
+# Normalize
+human <- NormalizeData(human)
+
+# Repeat for all species...
+```
+
+# Step 2: Adaptive Ortholog Alignment (The Core Innovation)
+
+This is where the magic happens:
+
+```{r eval=FALSE}
+# Terminal:
+Rscript 02_adaptive_ortholog_alignment.R \
+  --input ../data/all_species_preprocessed.rds \
+  --n_hvg 2000 \
+  --outdir ../data
+```
+
+What happens under the hood:
+
+```{r eval=FALSE}
+source("../R/adaptive_ortholog.R")
+
+# 1. Each species independently computes top 2000 HVGs
+# 2. Single-copy species → UPPERCASE
+# 3. Multi-copy species → for each gene family, pick the highest-expressed paralog
+# 4. Intersect all gene sets
+
+align_result <- adaptive_ortholog_align(
+  seurat_objects = seurat_list,
+  species_info = list(
+    human    = list(copy_type = "single"),
+    mouse    = list(copy_type = "single"),
+    lizard   = list(copy_type = "single"),
+    zebrafish = list(copy_type = "multi",
+                     copy_pattern = "^(\w+?)([a-z]\d*|[a-z]?)$"),
+    croaker  = list(copy_type = "multi",
+                    copy_pattern = "^(\w+?)([a-z]\d*|[a-z]?)$")
+  ),
+  n_hvg = 2000
+)
+
+# See which paralogs were selected
+head(align_result$multi_copy_choices$zebrafish)
+```
+
+### Understanding the Paralog Selection
+
+For zebrafish, each HVG that belongs to a multi-copy family is ranked by
+mean expression across all cells:
+
+| Gene Family | Paralogs        | Mean Expression | Selected |
+|-------------|-----------------|-----------------|----------|
+| sox2        | sox2a, sox2b   | 3.2 vs 0.8     | sox2a    |
+| neurod1     | neurod1a, neurod1b | 2.1 vs 1.9 | neurod1a |
+| gata3       | gata3a, gata3b | 1.5 vs 4.7     | gata3b   |
+
+The logic: if `sox2a` is expressed 4× higher than `sox2b` in these cells,
+it's likely the functional equivalent of mammalian SOX2 *in this tissue*.
+
+# Step 3: CCA Integration
+
+```{r eval=FALSE}
+Rscript 03_cca_integration.R \
+  --input ../data/all_species_preprocessed.rds \
+  --align_result ../data/align_result.rds \
+  --n_dim 30
+```
+
+This step:
+1. Renames genes in each species to the unified aligned gene set
+2. Merges all species into one Seurat object
+3. Runs Seurat's CCA-based integration pipeline
+4. Computes UMAP and clustering
+
+# Step 4: Visualization
+
+```{r eval=FALSE}
+Rscript 04_visualization.R \
+  --input ../data/integrated_seurat.rds \
+  --outdir ../figures
+```
+
+# Interpreting Results
+
+```{r eval=FALSE}
+integrated <- readRDS("../data/integrated_seurat.rds")
+
+# Check integration quality
+DimPlot(integrated, group.by = "species")
+
+# Are species mixing well? Good integration shows:
+# - Cells from different species intermingled (not separated by species)
+# - Clusters contain cells from multiple species
+# - CCA shows smooth transitions, not isolated species islands
+
+# Species composition per cluster
+table(integrated$seurat_clusters, integrated$species)
+
+# Find conserved markers
+markers <- FindConservedMarkers(
+  integrated,
+  ident.1 = 0,  # cluster of interest
+  grouping.var = "species"
+)
+```
+
+# Troubleshooting
+
+## "Very few aligned genes (<50)"
+
+Try:
+1. Reduce `n_hvg` to 1500 — fewer genes per species = larger intersection
+2. Check your `copy_pattern` regex — are paralogs being correctly grouped?
+3. Verify gene name conventions — are all single-copy species truly uppercase?
+
+## "Species don't mix on UMAP"
+
+Try:
+1. Increase `n_dim` in CCA (30 → 50)
+2. Verify that the aligned gene set is truly informative (check HVG overlap)
+3. Consider adding `k.weight` parameter in `FindIntegrationAnchors()`
+
+## "Integration is slow / runs out of memory"
+
+Try:
+1. Downsample each species to ~5000 cells before integration
+2. Reduce `n_hvg` to 1000
+3. Use `k.filter` parameter to limit anchors per cell
+
+# Session Info
+
+```{r}
+sessionInfo()
+```

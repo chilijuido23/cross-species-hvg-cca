@@ -1,0 +1,36 @@
+# R
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# Processed data
+data/*.rds
+data/*.csv
+data/*.txt
+data/*.h5ad
+data/*.h5
+
+# Figures (keep example CCA plot)
+figures/*.png
+!figures/cross-species_CCA.png
+figures/*.pdf
+figures/*.svg
+
+# Results
+results/*.rds
+results/*.csv
+
+# R package files
+*.tar.gz
+*.tgz
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temp files
+*~
+*.swp
+*.swo
