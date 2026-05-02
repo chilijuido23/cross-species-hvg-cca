@@ -340,7 +340,7 @@ Our HVG-based approach:
 If you use this method, please cite:
 
 ```
-[Citation information — add your paper/preprint DOI here]
+[Citation information — bioRxiv soon]
 ```
 
 And please credit the method as:
