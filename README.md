@@ -10,6 +10,14 @@
 >
 > Specifically designed for datasets that include teleost fish (zebrafish, large yellow croaker, etc.), whose genome duplications produce multi-copy genes that cannot be trivially mapped to mammalian single-copy orthologs.
 
+<p align="center">
+  <img src="./figures/cross-species_CCA.png" width="700" alt="Cross-Species CCA">
+</p>
+
+<p align="center">
+  <i>CCA integration of hypothalamic scRNA-seq from 5 species (human, mouse, lizard, zebrafish, large yellow croaker) using adaptive HVG-based ortholog alignment. Each point is one cell, colored by species.</i>
+</p>
+
 ---
 
 ## The Problem
@@ -324,14 +332,6 @@ Our HVG-based approach:
 | CCA `n_dim` | 30 | More species/samples → increase to 50. Small datasets → decrease to 20. |
 
 **Diagnostic**: If the intersection size is <100 genes, reduce `n_hvg` per species or check your `copy_pattern` regex. If >3000 genes, you may be including noise — increase stringency by decreasing `n_hvg`.
-
----
-
-## Example Results
-
-![Cross-Species CCA](./figures/cross-species_CCA.png)
-
-*CCA integration of hypothalamic single-cell transcriptomes from 5 species (human, mouse, lizard, zebrafish, large yellow croaker) using adaptive HVG-based ortholog alignment. Each point is a single cell, colored by species.*
 
 ---
 
