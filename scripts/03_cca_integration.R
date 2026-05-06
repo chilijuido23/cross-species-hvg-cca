@@ -18,6 +18,9 @@ suppressPackageStartupMessages({
   library(optparse)
 })
 
+# Source core algorithm
+source("../R/adaptive_ortholog.R")
+
 option_list <- list(
   make_option("--input", type = "character",
               default = "../data/all_species_preprocessed.rds",
@@ -40,9 +43,25 @@ dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
 cat("Loading data...\n")
 seurat_list <- readRDS(opt$input)
 align_result <- readRDS(opt$align_result)
-aligned_genes <- align_result$aligned_genes
 
-cat(sprintf("Aligned genes for CCA: %d\n", length(aligned_genes)))
+# ---- Pre-CCA Gene Consensus Validation ----
+cat("\n========================================\n")
+cat("  Pre-CCA Gene Name Validation\n")
+cat("========================================\n")
+
+align_result$seurat_objects <- seurat_list
+validation <- validate_gene_consensus(align_result, auto_repair = TRUE, verbose = TRUE)
+
+if (!validation$validated && length(validation$common_genes) < 50) {
+  stop(sprintf(
+    "FATAL: Only %d consensus genes (need >= 50). Check gene casing or reduce n_hvg.",
+    length(validation$common_genes)
+  ))
+}
+
+gene_map <- validation$gene_map
+aligned_genes <- validation$common_genes
+cat(sprintf("\nValidated: %d genes for CCA integration\n", length(aligned_genes)))
 
 # ---- For each species, subset to aligned genes and rename using aligned names ----
 cat("\nPreparing objects for integration...\n")
@@ -53,7 +72,6 @@ for (sp in names(seurat_list)) {
   cat(sprintf("  %s:\n", sp))
 
   obj <- seurat_list[[sp]]
-  gene_map <- align_result$gene_map
 
   # Map original genes -> aligned genes for this species
   sp_genes <- gene_map[[sp]]

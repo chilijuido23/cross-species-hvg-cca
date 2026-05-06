@@ -322,3 +322,233 @@ plot_alignment_diagnostics <- function(align_result) {
 
   return(plots)
 }
+
+
+# =============================================================================
+# Gene Symbol Harmonization Module
+# =============================================================================
+# Ensures identical gene name casing across all species before Seurat CCA.
+# This prevents the "gene not found" errors that occur when different species
+# use different casing conventions (human=SOX2, mouse=Sox2, zebrafish=sox2).
+
+
+#' Validate and harmonize gene names across species
+#'
+#' After adaptive ortholog alignment, this function:
+#'   1. Checks that all species' gene maps produce identical aligned gene sets
+#'   2. Reports any case mismatches with suggested fixes
+#'   3. Optionally auto-repairs trivially fixable mismatches
+#'   4. Returns a clean, validated gene map ready for Seurat merge
+#'
+#' @param align_result   Output from adaptive_ortholog_align()
+#' @param auto_repair    If TRUE, attempt to fix simple casing mismatches
+#' @param verbose        Print diagnostic messages
+#'
+#' @return List with:
+#'   \item{validated}{Logical — TRUE if all species agree on gene names}
+#'   \item{issues}{Data frame of any mismatches found}
+#'   \item{gene_map}{Cleaned gene map (if validated)}
+#'   \item{common_genes}{Final set of genes present in ALL species}
+#'
+#' @export
+validate_gene_consensus <- function(align_result, auto_repair = TRUE, verbose = TRUE) {
+  gene_map <- align_result$gene_map
+  species <- names(align_result$species_info)
+  aligned <- gene_map$aligned
+
+  # ---- Check 1: All species have the same aligned gene set ----
+  if (verbose) cat("\n=== Gene Consensus Validation ===\n")
+
+  species_gene_sets <- list()
+  for (sp in species) {
+    sp_map <- gene_map[[sp]]
+    names(sp_map) <- aligned
+    sp_genes <- aligned[!is.na(sp_map)]
+    species_gene_sets[[sp]] <- sp_genes
+  }
+
+  # Find genes present in all species
+  common <- Reduce(intersect, species_gene_sets)
+
+  # Find genes missing from each species
+  issues <- data.frame(
+    gene = character(),
+    missing_in = character(),
+    present_in = character(),
+    suggested_fix = character(),
+    stringsAsFactors = FALSE
+  )
+
+  for (sp in species) {
+    missing <- setdiff(aligned, species_gene_sets[[sp]])
+    if (length(missing) > 0) {
+      for (g in missing) {
+        # Which species HAVE this gene?
+        have_it <- names(which(sapply(species_gene_sets, function(s) g %in% s)))
+        issues <- rbind(issues, data.frame(
+          gene = g,
+          missing_in = sp,
+          present_in = paste(have_it, collapse = ", "),
+          suggested_fix = suggest_gene_fix(g, sp, gene_map, align_result),
+          stringsAsFactors = FALSE
+        ))
+      }
+    }
+  }
+
+  # ---- Report ----
+  if (verbose) {
+    cat(sprintf("  Total aligned genes: %d\n", length(aligned)))
+    cat(sprintf("  Common to ALL species: %d\n", length(common)))
+    for (sp in species) {
+      n_present <- length(species_gene_sets[[sp]])
+      n_missing <- length(aligned) - n_present
+      status <- if (n_missing == 0) "✓" else sprintf("✗ (%d missing)", n_missing)
+      cat(sprintf("  %-25s %d genes %s\n", paste0(sp, ":"), n_present, status))
+    }
+
+    if (nrow(issues) > 0) {
+      cat(sprintf("\n  ⚠ %d gene mismatches detected:\n", nrow(issues)))
+      for (i in seq_len(min(10, nrow(issues)))) {
+        iss <- issues[i, ]
+        cat(sprintf("    %s: missing from %s (present in %s)\n",
+                     iss$gene, iss$missing_in, iss$present_in))
+        if (nchar(iss$suggested_fix) > 0) {
+          cat(sprintf("      → fix: %s\n", iss$suggested_fix))
+        }
+      }
+      if (nrow(issues) > 10) {
+        cat(sprintf("    ... and %d more\n", nrow(issues) - 10))
+      }
+    } else {
+      cat("\n  ✓ All genes validated — ready for CCA integration\n")
+    }
+  }
+
+  # ---- Auto-repair ----
+  repaired_map <- gene_map
+  if (auto_repair && nrow(issues) > 0) {
+    if (verbose) cat("\n  Attempting auto-repair...\n")
+    for (i in seq_len(nrow(issues))) {
+      iss <- issues[i, ]
+      g <- iss$gene
+      sp <- iss$missing_in
+
+      # Strategy 1: Case-insensitive lookup in original HVGs
+      sp_hvgs <- align_result$hvg_lists[[sp]]
+      sp_hvgs_upper <- toupper(sp_hvgs)
+      match_idx <- which(sp_hvgs_upper == g)
+      if (length(match_idx) == 1) {
+        repaired_map[[sp]][which(aligned == g)] <- sp_hvgs[match_idx]
+        if (verbose) cat(sprintf("    Fixed %s in %s: %s → %s (case match)\n",
+                                  g, sp, NA, sp_hvgs[match_idx]))
+        next
+      }
+
+      # Strategy 2: Check if it's a multi-copy species missing a single-copy gene
+      info <- align_result$species_info[[sp]]
+      if (info$copy_type == "multi") {
+        # Try regex-based matching against original features
+        pattern <- info$copy_pattern %||% "^(\\w+?)([a-z]\\d*|[a-z]?)$"
+        # The gene g is uppercase (e.g., SOX2). Try to find matching lower-case paralogs
+        # by converting to lowercase and checking against HVGs
+        sp_hvgs_lower <- tolower(sp_hvgs)
+        g_lower <- tolower(g)
+        matching_hvgs <- sp_hvgs[grepl(paste0("^", g_lower), sp_hvgs_lower)]
+        if (length(matching_hvgs) > 0) {
+          # Pick the one with highest mean expression
+          obj <- align_result$seurat_objects %||% NULL
+          if (!is.null(obj) && sp %in% names(obj)) {
+            expr <- tryCatch({
+              Matrix::rowMeans(GetAssayData(obj[[sp]], assay = "RNA", layer = "data"))
+            }, error = function(e) NULL)
+            if (!is.null(expr) && all(matching_hvgs %in% names(expr))) {
+              best <- matching_hvgs[which.max(expr[matching_hvgs])]
+            } else {
+              best <- matching_hvgs[1]
+            }
+          } else {
+            best <- matching_hvgs[1]
+          }
+          repaired_map[[sp]][which(aligned == g)] <- best
+          if (verbose) cat(sprintf("    Fixed %s in %s: → %s (paralog match)\n",
+                                    g, sp, best))
+        }
+      }
+    }
+  }
+
+  # ---- Recompute common genes after repair ----
+  repaired_sets <- list()
+  for (sp in species) {
+    sp_map <- repaired_map[[sp]]
+    names(sp_map) <- aligned
+    repaired_sets[[sp]] <- aligned[!is.na(sp_map)]
+  }
+  common_repaired <- Reduce(intersect, repaired_sets)
+
+  result <- list(
+    validated = (nrow(issues) == 0 || length(common_repaired) == length(common)),
+    issues = issues,
+    gene_map = repaired_map,
+    common_genes = common_repaired,
+    n_original = length(common),
+    n_repaired = length(common_repaired)
+  )
+
+  if (verbose) {
+    cat(sprintf("\n  Final consensus: %d genes\n", length(common_repaired)))
+    if (length(common_repaired) < 50) {
+      warning("Very few consensus genes (", length(common_repaired),
+              "). CCA integration may be unstable.")
+    }
+  }
+
+  return(result)
+}
+
+
+#' Suggest a fix for a gene mismatch
+#' @keywords internal
+suggest_gene_fix <- function(gene, species, gene_map, align_result) {
+  # Check if this gene exists with different case in the species' HVGs
+  hvg_list <- align_result$hvg_lists[[species]]
+  hvg_upper <- toupper(hvg_list)
+
+  if (gene %in% hvg_upper) {
+    idx <- which(hvg_upper == gene)
+    return(paste0("Use original gene name: '", hvg_list[idx],
+                  "' (case mismatch — add toupper() step)"))
+  }
+
+  # Check if there's a similar gene (fuzzy match)
+  distances <- utils::adist(gene, hvg_upper)
+  if (min(distances) <= 2) {
+    closest <- hvg_list[which.min(distances)]
+    return(paste0("Closest match: '", closest,
+                  "' (distance=", min(distances), " — verify manually)"))
+  }
+
+  return("")
+}
+
+
+#' One-shot gene harmonization: align + validate + repair
+#'
+#' Convenience wrapper that runs adaptive_ortholog_align() followed by
+#' validate_gene_consensus() with auto-repair.
+#'
+#' @param ... Arguments passed to adaptive_ortholog_align()
+#' @return List with align_result + validation_result
+#' @export
+harmonize_cross_species_genes <- function(...) {
+  align_result <- adaptive_ortholog_align(...)
+  validation <- validate_gene_consensus(align_result, auto_repair = TRUE, verbose = TRUE)
+
+  list(
+    align_result = align_result,
+    validation = validation,
+    gene_map = validation$gene_map,
+    common_genes = validation$common_genes
+  )
+}

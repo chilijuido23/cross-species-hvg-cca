@@ -11,6 +11,14 @@ suppressPackageStartupMessages({
   library(Seurat)
 })
 
+# Source core algorithm for validation
+script_dir <- dirname(normalizePath(commandArgs(trailingOnly = FALSE)[
+  grep("^--file=", commandArgs(trailingOnly = FALSE))
+][1]))
+script_dir <- sub("^--file=", "", script_dir)
+project_root <- normalizePath(file.path(script_dir, "..", ".."))
+source(file.path(project_root, "R", "adaptive_ortholog.R"))
+
 # ---- Parse args ----
 args <- commandArgs(trailingOnly = TRUE)
 arg_list <- list()
@@ -39,8 +47,29 @@ dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
 cat("Loading data...\n")
 seurat_list <- readRDS(preprocessed_file)
 align_result <- readRDS(align_file)
-aligned_genes <- align_result$aligned_genes
-cat(sprintf("Aligned genes: %d\n", length(aligned_genes)))
+
+# ---- Validate gene consensus (PRE-CCA CHECK) ----
+cat("\n========================================\n")
+cat("  Pre-CCA Gene Name Validation\n")
+cat("========================================\n")
+
+# Store seurat objects in align_result for repair strategies
+align_result$seurat_objects <- seurat_list
+
+validation <- validate_gene_consensus(align_result, auto_repair = TRUE, verbose = TRUE)
+
+if (!validation$validated && length(validation$common_genes) < 50) {
+  stop(sprintf(
+    "Gene consensus validation FAILED. Only %d common genes found (minimum 50 required).\n
+    Check the issues above or re-run with lower n_hvg.",
+    length(validation$common_genes)
+  ))
+}
+
+# Use validated gene map
+gene_map <- validation$gene_map
+aligned_genes <- validation$common_genes
+cat(sprintf("\nUsing validated gene set: %d genes for CCA\n", length(aligned_genes)))
 
 # ---- Prepare objects ----
 cat("Preparing objects for integration...\n")
@@ -49,8 +78,6 @@ seurat_prepped <- list()
 for (sp in names(seurat_list)) {
   cat(sprintf("  %s: ", sp))
   obj <- seurat_list[[sp]]
-  gene_map <- align_result$gene_map
-
   sp_genes <- gene_map[[sp]]
   names(sp_genes) <- gene_map$aligned
   sp_genes <- sp_genes[!is.na(sp_genes)]
